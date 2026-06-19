@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: sync-upstream-main
@@ -24,8 +24,7 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Merge upstream main
-        id: merge
+      - name: Pull upstream main
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -35,13 +34,8 @@ jobs:
 
           if git merge-base --is-ancestor upstream/main HEAD; then
             echo "Origin main already contains upstream/main."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           git merge --no-edit upstream/main
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Push synced main
-        if: steps.merge.outputs.changed == 'true'
-        run: git push origin HEAD:main
+          echo "Upstream main was pulled into the runner checkout. No changes were pushed."
