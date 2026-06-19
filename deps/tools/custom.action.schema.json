@@ -31,6 +31,7 @@
                 "TargetCountProgress",
                 "TargetCountFinish",
                 "TargetCountAbort",
+                "BalancedFarmingAnalyze",
                 "JudgeDepthsOfMythWeekly",
                 "ResetEatCandyFlag",
                 "CombatActivityOverride",
@@ -148,6 +149,9 @@
         },
         {
             "$ref": "#/$defs/TargetCountAbort"
+        },
+        {
+            "$ref": "#/$defs/BalancedFarmingAnalyze"
         },
         {
             "$ref": "#/$defs/JudgeDepthsOfMythWeekly"
@@ -875,6 +879,14 @@
                 }
             }
         },
+        "BalancedFarmingAnalyze": {
+            "properties": {
+                "custom_action": {
+                    "const": "BalancedFarmingAnalyze",
+                    "description": "识别仓库紫色主线材料数量，选择最少的一种并覆盖作战关卡参数。"
+                }
+            }
+        },
         "JudgeDepthsOfMythWeekly": {
             "allOf": [
                 {
@@ -1206,6 +1218,21 @@
                 "custom_action": {
                     "const": "EightBitCombatMove",
                     "description": "8-bit 战斗界面移动逻辑"
+                },
+                "custom_action_param": {
+                    "type": "object",
+                    "properties": {
+                        "move_input": {
+                            "type": "string",
+                            "enum": [
+                                "key",
+                                "click"
+                            ],
+                            "description": "移动输入方式。key 使用方向键，click 使用 Python 中预留的四方向点击坐标。",
+                            "default": "key"
+                        }
+                    },
+                    "unevaluatedProperties": false
                 }
             }
         },
