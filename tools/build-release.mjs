@@ -13,6 +13,7 @@
 import {basename, dirname, join} from "node:path";
 
 const dryRun = process.argv.includes("--dry-run");
+const releaseTagOverride = commandLineValue("--release-tag");
 const projectSlug = "m9a";
 const releaseArtifactName = "M9A";
 mkdirSync("dist", {recursive: true});
@@ -37,7 +38,7 @@ if (!isReleaseVersion(sourceVersion)) {
     throw new Error("interface.json version must be a release tag such as v0.1.0");
 }
 
-const releaseTag = detectReleaseTag();
+const releaseTag = releaseTagOverride ?? detectReleaseTag();
 if (!dryRun && !releaseTag) {
     throw new Error("release build requires a SemVer Git tag such as v0.1.0");
 }
@@ -131,6 +132,9 @@ for (const path of [
 ]) {
     if (path.includes("\\")) {
         throw new Error(`release paths must use forward slashes: ${path}`);
+    }
+    if (!isProjectRelativePath(path)) {
+        throw new Error(`release paths must stay within the project root: ${path}`);
     }
     const relativePath = path.startsWith("./") ? path.slice(2) : path;
     if (!existsSync(relativePath)) {
@@ -256,6 +260,17 @@ function interfaceResourcePaths(value) {
     return Array.isArray(value) ? value.flatMap((item) => (isRecord(item) ? strings(item.path) : [])) : [];
 }
 
+function isProjectRelativePath(path) {
+    const stripped = path.startsWith("./") ? path.slice(2) : path;
+    return (
+        stripped !== "" &&
+        stripped !== "." &&
+        !stripped.startsWith("/") &&
+        !/^[A-Za-z]:/.test(stripped) &&
+        !stripped.split("/").includes("..")
+    );
+}
+
 function releasePackagePaths(interfaceJson, runtimePlatform, guiKey) {
     const paths = [
         "tasks",
@@ -314,7 +329,8 @@ function prepareReleasePackage(guiKey, gui, packagePaths, interfaceJson, runtime
         copyPath("logo.ico", join(pkgDir, "logo.ico"));
     }
     for (const path of packagePaths) {
-        copyPath(path, join(pkgDir, releasePackagePath(path)));
+        const options = path === "agent" ? {filter: shouldCopyAgentPath} : {};
+        copyPath(path, join(pkgDir, releasePackagePath(path)), options);
     }
     for (const path of optionalPackagePaths()) {
         if (existsSync(path)) {
@@ -477,6 +493,11 @@ function copyDirectoryContents(source, target, options = {}) {
     for (const entry of readdirSync(source)) {
         copyPath(join(source, entry), join(target, entry), options);
     }
+}
+
+function shouldCopyAgentPath(source) {
+    const name = basename(source).toLowerCase();
+    return name !== "__pycache__" && !name.endsWith(".pyc") && !name.endsWith(".pyo");
 }
 
 function shouldCopyMxuMaafwPath(source) {
@@ -645,6 +666,16 @@ function detectReleaseTag() {
     if (typeof refName === "string" && refName.startsWith("v")) return refName;
     const ref = process.env.GITHUB_REF;
     return typeof ref === "string" && ref.startsWith("refs/tags/") ? ref.slice("refs/tags/".length) : undefined;
+}
+
+function commandLineValue(name) {
+    const index = process.argv.indexOf(name);
+    if (index < 0) return undefined;
+    const value = process.argv[index + 1];
+    if (typeof value !== "string" || value.startsWith("--")) {
+        throw new Error(`${name} requires a value`);
+    }
+    return value;
 }
 
 function isReleaseVersion(value) {

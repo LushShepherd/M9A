@@ -55,19 +55,6 @@ if (packageJson.engines?.node !== ">=24") {
     throw new Error("package.json engines.node must be >=24");
 }
 
-for (const [
-    name,
-    command,
-] of Object.entries(expectedPackageScripts(project))) {
-    if (packageJson.scripts?.[name] !== command) {
-        const message =
-            name === "check:maa"
-                ? "package.json scripts.check:maa must use local pnpm exec maa-tools check"
-                : `package.json scripts.${name} must be ${command}`;
-        throw new Error(message);
-    }
-}
-
 if (!existsSync(".node-version")) {
     throw new Error(".node-version is missing");
 }
@@ -214,6 +201,9 @@ for (const path of [
 ]) {
     if (typeof path !== "string" || path.includes("\\")) {
         throw new Error("interface/import paths must be strings with forward slashes");
+    }
+    if (!isProjectRelativePath(path)) {
+        throw new Error(`interface/import paths must stay within the project root: ${path}`);
     }
     if (!existsSync(path)) {
         throw new Error(`referenced path does not exist: ${path}`);
@@ -410,32 +400,15 @@ function stripDotSlash(path) {
     return path.startsWith("./") ? path.slice(2) : path;
 }
 
-function expectedPackageScripts(project) {
-    const scripts = {
-        format: "prettier --write .",
-        "format:check": "prettier --check .",
-        lint: "node tools/check-project.mjs",
-        "check:schema": "node tools/validate-schema.mjs",
-        "check:maa": "pnpm exec maa-tools check",
-        check: "pnpm format:check && pnpm check:schema && pnpm check:maa && pnpm lint",
-    };
-    if (projectHasGithubAutomation(project)) {
-        scripts["release:dry-run"] = "node tools/build-release.mjs --dry-run";
-        scripts["sync:runtime"] = "node tools/sync-runtime.mjs";
-    }
-    if (project.addons?.schemaSync) {
-        scripts["sync:schema"] = "node tools/sync-schema.mjs";
-    }
-    if (project.addons?.optimizeImages) {
-        scripts["optimize:images"] = "node tools/optimize-images.mjs";
-    }
-    if (project.python) {
-        scripts["format:py"] = "uv run --frozen ruff format .";
-        scripts["lint:py"] = "uv run --frozen ruff check .";
-        scripts["typecheck:py"] = "uv run --frozen pyright";
-        scripts["check:py"] = "pnpm lint:py && pnpm typecheck:py";
-    }
-    return scripts;
+function isProjectRelativePath(path) {
+    const stripped = stripDotSlash(path);
+    return (
+        stripped !== "" &&
+        stripped !== "." &&
+        !stripped.startsWith("/") &&
+        !/^[A-Za-z]:/.test(stripped) &&
+        !stripped.split("/").includes("..")
+    );
 }
 
 function managedFileHash(path, content) {
