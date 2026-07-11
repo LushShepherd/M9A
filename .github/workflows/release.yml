@@ -1,4 +1,4 @@
-name: Release
+﻿name: Release
 
 on:
   push:
@@ -40,7 +40,7 @@ jobs:
             runtime_arch: x64
             drop_os: linux
             drop_core_supported: true
-            drop_core_smoke_import: true
+            drop_core_smoke_import: false
             ext: tar.gz
           - os: ubuntu-latest
             artifact_os: linux
@@ -249,6 +249,7 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v3
         with:
+          prerelease: ${{ contains(github.ref_name, '-') }}
           body_path: release-assets/CHANGES.md
           files: |
             release-assets/*.zip
@@ -259,4 +260,10 @@ jobs:
         run: |
           gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" \
             -f event_type=create-maa-project-release \
+            -f client_payload[tag]="$GITHUB_REF_NAME"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" \
+            -f event_type=mirrorchyan-upload \
+            -f client_payload[tag]="$GITHUB_REF_NAME"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" \
+            -f event_type=mirrorchyan-release-note \
             -f client_payload[tag]="$GITHUB_REF_NAME"
