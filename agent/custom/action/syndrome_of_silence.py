@@ -34,6 +34,8 @@ class SOSSelectNode(CustomAction):
 
     node_type: str = ""
     event_name: str = ""
+    # 恶战重开待跳过标记：重开后 SOSNodeProcess 据此短路成功，避免拿陈旧节点状态空转
+    restart_pending: bool = False
 
     def run(
         self,
@@ -86,6 +88,11 @@ class SOSSelectNode(CustomAction):
         if node_type == "恶战" and restart_on_ezhan:
             logger.info("检测到恶战节点，返回主界面重新开始")
             context.run_task("SOSBack2Start")
+            # 复位状态：SOSNodeProcess 在主菜单上没有可处理的节点，
+            # 置跳过标记让它立即成功返回，由外层循环重新开局
+            SOSSelectNode.node_type = ""
+            SOSSelectNode.event_name = ""
+            SOSSelectNode.restart_pending = True
             return CustomAction.RunResult(success=True)
         SOSSelectNode.node_type = node_type
         logger.info(f"当前进入节点类型: {node_type}")
@@ -109,7 +116,34 @@ class SOSSelectNode(CustomAction):
             img = context.tasker.controller.post_screencap().wait().get()
             rec = context.run_recognition("SOSGOTO", img)
             if is_hit(rec):
+                # 预览面板标注节点类型，以界面标注为准修正模板识别结果
+                # 各类型标注均在顶部槽位，仅冲突面板因顶部敌人提示横幅下移一行
+                type_rec = context.run_recognition("SOSSelectNodeTypeRec", img)
+                if not is_hit(type_rec):
+                    type_rec = context.run_recognition(
+                        "SOSSelectNodeTypeRec",
+                        img,
+                        {"SOSSelectNodeTypeRec": {"roi": [843, 190, 180, 40]}},
+                    )
+                if is_hit(type_rec):
+                    preview_type = SOSSelectNode._match_node_type(ocr_text(type_rec), nodes)
+                    if preview_type and preview_type != node_type:
+                        logger.warning(f"节点类型修正(预览面板): {node_type} -> {preview_type}")
+                        node_type = preview_type
+                        SOSSelectNode.node_type = node_type
+                if node_type == "恶战" and restart_on_ezhan:
+                    logger.info("预览面板确认为恶战节点，返回主界面重新开始")
+                    context.run_task("SOSBack2Start")
+                    SOSSelectNode.node_type = ""
+                    SOSSelectNode.event_name = ""
+                    SOSSelectNode.restart_pending = True
+                    return CustomAction.RunResult(success=True)
                 context.run_task("SOSGOTO")
+                break
+            # 部分过渡层点击节点会跳过预览直接进入事件：
+            # 已离开主地图时不再盲点击旧坐标，立即转入事件名阶段
+            if not is_hit(context.run_recognition("FlagInSOSMain", img)):
+                logger.debug("未出现前往按钮且已离开主地图，判定为直接进入节点")
                 break
             times += 1
 
@@ -170,6 +204,9 @@ class SOSSelectNode(CustomAction):
                     node_type = "购物契机"
                     SOSSelectNode.node_type = node_type
                     SOSSelectNode.event_name = ""
+                elif SOSSelectNode._resolve_event_cross_type(context, nodes, node_type):
+                    # 本类型 ROI 失败多为节点分类有误：换其他类型的 ROI 重读事件名并跨类型修正
+                    return CustomAction.RunResult(success=True)
                 else:
                     SOSSelectNode.event_name = ""
                     return CustomAction.RunResult(success=False)
@@ -177,6 +214,72 @@ class SOSSelectNode(CustomAction):
             # 没有事件名
             SOSSelectNode.event_name = ""
         return CustomAction.RunResult(success=True)
+
+    @staticmethod
+    def _match_node_type(text: str, nodes: dict[str, Any]) -> str:
+        """预览面板 OCR 文本 → 节点类型名：精确 → 包含 → 0.6 相似度；失败返回空串。"""
+        if text in nodes:
+            return text
+        names = [k for k in nodes if k not in ("types", "common_interrupts")]
+        for name in names:
+            if name and (name in text or text in name):
+                return name
+        matches = difflib.get_close_matches(text, names, n=1, cutoff=0.6)
+        return matches[0] if matches else ""
+
+    @staticmethod
+    def _collect_alt_event_rois(nodes: dict[str, Any], node_type: str) -> list[Any]:
+        """收集除自身类型外所有出现过的事件名 ROI，按首次出现顺序去重。"""
+        own_roi = nodes[node_type]["event_name_roi"]
+        alt_rois: list[Any] = []
+        for type_name, info in nodes.items():
+            if type_name in ("types", "common_interrupts") or not isinstance(info, dict):
+                continue
+            roi = info.get("event_name_roi")
+            if roi and roi != own_roi and roi not in alt_rois:
+                alt_rois.append(roi)
+        return alt_rois
+
+    @staticmethod
+    def _find_event_owner(event: str, nodes: dict[str, Any]) -> str | None:
+        """在全部节点类型的事件表中查找事件归属：先精确匹配，后 0.6 相似度兜底。"""
+        candidates: dict[str, str] = {}
+        for type_name, info in nodes.items():
+            if type_name in ("types", "common_interrupts") or not isinstance(info, dict):
+                continue
+            events = info.get("events")
+            if not isinstance(events, dict):
+                continue
+            if event in events:
+                return type_name
+            candidates.update({name: type_name for name in events})
+        matches = difflib.get_close_matches(event, list(candidates.keys()), n=1, cutoff=0.6)
+        return candidates[matches[0]] if matches else None
+
+    @staticmethod
+    def _resolve_event_cross_type(context: Context, nodes: dict[str, Any], node_type: str) -> bool:
+        """
+        事件名按本类型 ROI 识别失败时的自愈：节点分类可能有误（如必经之路被
+        误分为途中偶遇），依次改用其他类型的 event_name_roi 重读事件名，
+        并跨类型查找归属；命中则修正 node_type/event_name 供 SOSNodeProcess 使用。
+        """
+        for roi in SOSSelectNode._collect_alt_event_rois(nodes, node_type):
+            if context.tasker.stopping:
+                return False
+            img = context.tasker.controller.post_screencap().wait().get()
+            reco_detail = context.run_recognition("SOSEventRec", img, {"SOSEventRec": {"roi": roi}})
+            if not is_hit(reco_detail):
+                continue
+            event = ocr_text(reco_detail)
+            owner = SOSSelectNode._find_event_owner(event, nodes)
+            if owner is None:
+                logger.debug(f"备用 ROI 识别到「{event}」，未命中任何事件表")
+                continue
+            logger.warning(f"节点类型修正: {node_type} -> {owner}（事件「{event}」）")
+            SOSSelectNode.node_type = owner
+            SOSSelectNode.event_name = event
+            return True
+        return False
 
 
 @AgentServer.custom_action("SOSNodeProcess")
@@ -193,6 +296,11 @@ class SOSNodeProcess(CustomAction):
         context: Context,
         argv: CustomAction.RunArg,
     ) -> CustomAction.RunResult:
+
+        if SOSSelectNode.restart_pending:
+            SOSSelectNode.restart_pending = False
+            logger.debug("刚完成恶战重开，跳过本次节点处理")
+            return CustomAction.RunResult(success=True)
 
         with open("data/sos/nodes.json", encoding="utf-8") as f:
             nodes = json.load(f)
