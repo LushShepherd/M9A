@@ -24,14 +24,13 @@ icon: hugeicons:structure-01
     - utils/ # 工具函数
     - __init__.py # 模块初始化
     - agent_runtime.py # Agent 服务运行入口
-    - bootstrap.py # Agent Linux 启动器（虚拟环境与依赖安装）
     - main.py # 主入口文件
 - data/ # 数据
 - docs/ # 文档目录
     - en_us/ # 英文文档
     - zh_cn/ # 中文文档
     - .markdownlint.yaml # Markdown 代码检查配置
-- i18n/ # Project Interface 界面翻译文件
+- locales/ # Project Interface 界面翻译文件
     - en_us.json # 英文翻译
     - zh_cn.json # 简体中文翻译
 - MaaCommonAssets/ # MAA 公共资源（子模块）

@@ -24,14 +24,13 @@ icon: hugeicons:structure-01
     - utils/ # Utility functions
     - __init__.py # Module initialization
     - agent_runtime.py # Agent server entry
-    - bootstrap.py # Agent Linux launcher (venv & dependency setup)
     - main.py # Main entry point
 - data/ # Data
 - docs/ # Documentation directory
     - en_us/ # English documentation
     - zh_cn/ # Chinese documentation
     - .markdownlint.yaml # Markdown linting configuration
-- i18n/ # Project Interface display translations
+- locales/ # Project Interface display translations
     - en_us.json # English translations
     - zh_cn.json # Simplified Chinese translations
 - MaaCommonAssets/ # MAA common resources (submodule)

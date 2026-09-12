@@ -52,30 +52,15 @@ const GUI_TYPES = {
                       "mxu.exe",
                   ],
         flatLayout: false,
-        modifyInterface(iface, slug, ver, platform) {
+        modifyInterface(iface, slug, ver) {
             const modified = {...iface};
             const displayName =
                 typeof modified.label === "string" && modified.label.trim() ? modified.label.trim() : slug;
             modified.title = `${displayName} ${ver} | MXU`;
             modified.mirrorchyan_rid = "M9A-MXU";
-            if (Array.isArray(modified.agent) && modified.agent[0]) {
-                modified.agent = modified.agent.map((agent) =>
-                    isRecord(agent)
-                        ? {
-                              ...agent,
-                              child_exec: platform.startsWith("win-")
-                                  ? "./python/python.exe"
-                                  : platform.startsWith("osx-")
-                                    ? "./python/bin/python3"
-                                    : "python3",
-                              child_args: [
-                                  "-u",
-                                  "./agent/main.py",
-                              ],
-                          }
-                        : agent,
-                );
-            }
+            // Deliberately no agent override: prepareReleaseInterface already sets the
+            // platform-correct command (the bundled interpreter running agent/main.py), and
+            // MXU resolves relative child_exec paths against the project root on its own.
             return modified;
         },
     },
@@ -143,14 +128,9 @@ function main() {
     for (const guiKey of enabledGuis) {
         const gui = GUI_TYPES[guiKey];
         console.log(`\n--- Building ${gui.suffix} package ---`);
-        const packagePaths = releasePackagePaths(interfaceJson, runtimePlatform, guiKey);
+        const packagePaths = releasePackagePaths(interfaceJson, guiKey);
 
-        const guiInterface = gui.modifyInterface(
-            prepareReleaseInterface(interfaceJson, version, runtimePlatform),
-            projectSlug,
-            version,
-            runtimePlatform,
-        );
+        const guiInterface = releaseGuiInterface(guiKey, interfaceJson, version, runtimePlatform);
 
         if (!dryRun) {
             const guiPath = guiRuntimePath(gui.runtimeDir, runtimePlatform);
@@ -163,7 +143,7 @@ function main() {
                     throw new Error(`release package path is missing: ${path}`);
                 }
             }
-            if (packageHasAgent(interfaceJson) && hasEmbeddedPythonRuntime(runtimePlatform)) {
+            if (packageHasAgent(interfaceJson)) {
                 const pythonPath = pythonRuntimePath(runtimePlatform);
                 if (!existsSync(pythonPath)) {
                     throw new Error(`release package path is missing: ${pythonPath}`);
@@ -274,7 +254,7 @@ function isProjectRelativePath(path) {
     );
 }
 
-function releasePackagePaths(interfaceJson, runtimePlatform, guiKey) {
+function releasePackagePaths(interfaceJson, guiKey) {
     const paths = [
         "tasks",
         "resource",
@@ -286,11 +266,6 @@ function releasePackagePaths(interfaceJson, runtimePlatform, guiKey) {
     }
     if (packageHasAgent(interfaceJson)) {
         paths.push("agent");
-        if (runtimePlatform.startsWith("linux-")) {
-            // Linux is the only platform whose Agent resolves requirements.txt at
-            // runtime (bootstrap.py); win/mac runtimes ship with preinstalled deps.
-            paths.push("requirements.txt", linuxPythonDepsPath(runtimePlatform));
-        }
     }
     return paths;
 }
@@ -317,12 +292,29 @@ function prepareReleaseInterface(interfaceJson, version, runtimePlatform) {
                 ? {
                       ...agent,
                       child_exec: releaseAgentChildExec(runtimePlatform),
-                      child_args: releaseAgentChildArgs(runtimePlatform),
+                      child_args: [
+                          ...RELEASE_AGENT_CHILD_ARGS,
+                      ],
                   }
                 : agent,
         );
     }
     return releaseInterface;
+}
+
+// GUI tweaks always run on top of the per-platform release interface, so a GUI can never
+// replace the platform-correct Agent command set up by prepareReleaseInterface.
+function releaseGuiInterface(guiKey, interfaceJson, version, runtimePlatform) {
+    const gui = GUI_TYPES[guiKey];
+    if (!gui) {
+        throw new Error(`unknown GUI runtime: ${guiKey}`);
+    }
+    return gui.modifyInterface(
+        prepareReleaseInterface(interfaceJson, version, runtimePlatform),
+        projectSlug,
+        version,
+        runtimePlatform,
+    );
 }
 
 function prepareReleasePackage(guiKey, gui, packagePaths, interfaceJson, runtimePlatform) {
@@ -337,14 +329,14 @@ function prepareReleasePackage(guiKey, gui, packagePaths, interfaceJson, runtime
     }
     for (const path of packagePaths) {
         const options = path === "agent" ? {filter: shouldCopyAgentPath} : {};
-        copyPath(path, join(pkgDir, releasePackagePath(path)), options);
+        copyPath(path, join(pkgDir, path), options);
     }
     for (const path of optionalPackagePaths()) {
         if (existsSync(path)) {
-            copyPath(path, join(pkgDir, releasePackagePath(path)));
+            copyPath(path, join(pkgDir, path));
         }
     }
-    if (packageHasAgent(interfaceJson) && hasEmbeddedPythonRuntime(runtimePlatform)) {
+    if (packageHasAgent(interfaceJson)) {
         copyPath(pythonRuntimePath(runtimePlatform), join(pkgDir, "python"));
     }
     if (!gui.flatLayout) {
@@ -398,7 +390,7 @@ function smokeReleasePackage(gui, root, packagePaths, runtimePlatform) {
         throw new Error("release package smoke failed: package must not contain a top-level wrapper directory");
     }
     for (const path of packagePaths) {
-        const packagePath = releasePackagePath(path);
+        const packagePath = path;
         if (!existsSync(join(root, packagePath))) {
             throw new Error(`release package smoke failed: package path is missing: ${packagePath}`);
         }
@@ -451,11 +443,8 @@ function smokeReleasePackage(gui, root, packagePaths, runtimePlatform) {
     }
     if (packageHasAgent(packagedInterface)) {
         const childExec = packagedInterface.agent[0]?.child_exec ?? releaseAgentChildExec(runtimePlatform);
-        if (hasEmbeddedPythonRuntime(runtimePlatform) && !existsSync(join(root, ...childExec.split("/")))) {
+        if (!existsSync(join(root, ...childExec.split("/")))) {
             throw new Error(`release package smoke failed: Agent Python entrypoint is missing: ${childExec}`);
-        }
-        if (!existsSync(join(root, "agent", "bootstrap.py"))) {
-            throw new Error("release package smoke failed: Agent bootstrap is missing");
         }
     }
     assertUnixExecutablePermissions(root, runtimePlatform);
@@ -524,8 +513,10 @@ function isMxuMaafwExcludedName(name) {
     );
 }
 
+// Windows hosts cannot represent Unix permission bits, so cross-building a non-Windows
+// package there must skip the executable-bit checks instead of failing the smoke test.
 function ensureUnixExecutablePermissions(root, runtimePlatform) {
-    if (runtimePlatform.startsWith("win-")) return;
+    if (process.platform === "win32" || runtimePlatform.startsWith("win-")) return;
     for (const path of findUnixExecutableFiles(root)) {
         const mode = statSync(path).mode;
         chmodSync(path, mode | 0o755);
@@ -533,7 +524,7 @@ function ensureUnixExecutablePermissions(root, runtimePlatform) {
 }
 
 function assertUnixExecutablePermissions(root, runtimePlatform) {
-    if (runtimePlatform.startsWith("win-")) return;
+    if (process.platform === "win32" || runtimePlatform.startsWith("win-")) return;
     for (const path of findUnixExecutableFiles(root)) {
         if ((statSync(path).mode & 0o111) === 0) {
             throw new Error(`release package smoke failed: executable bit is missing: ${path}`);
@@ -576,24 +567,12 @@ function removeFiles(root, shouldRemove) {
     });
 }
 
-function releasePackagePath(path) {
-    return path.startsWith(".create-maa-project/runtime/python-deps/") ? "deps" : path;
-}
-
 function guiRuntimePath(runtimeDir, runtimePlatform) {
     return join(".create-maa-project", "runtime", runtimeDir, runtimePlatform);
 }
 
 function pythonRuntimePath(runtimePlatform) {
     return join(".create-maa-project", "runtime", "python", runtimePlatform);
-}
-
-function linuxPythonDepsPath(runtimePlatform) {
-    return join(".create-maa-project", "runtime", "python-deps", runtimePlatform);
-}
-
-function hasEmbeddedPythonRuntime(runtimePlatform) {
-    return runtimePlatform.startsWith("win-") || runtimePlatform.startsWith("osx-");
 }
 
 function guiEntrypointName(runtimePlatform) {
@@ -651,26 +630,17 @@ function normalizeRuntimeArch(value) {
     return "";
 }
 
+// Every release package ships an embedded interpreter with the Agent dependencies
+// preinstalled: Windows uses the python.org embeddable runtime, macOS and Linux use
+// python-build-standalone. All of them live under `python/` at the package root.
 function releaseAgentChildExec(runtimePlatform) {
-    if (runtimePlatform.startsWith("win-")) return "python/python.exe";
-    if (runtimePlatform.startsWith("osx-")) return "python/bin/python3";
-    return "python3";
+    return runtimePlatform.startsWith("win-") ? "python/python.exe" : "python/bin/python3";
 }
 
-function releaseAgentChildArgs(runtimePlatform) {
-    // win/mac embedded runtimes ship with preinstalled dependencies and start
-    // straight into the Agent; only Linux relies on bootstrap.py to set up a venv.
-    if (runtimePlatform.startsWith("linux-")) {
-        return [
-            "-u",
-            "agent/bootstrap.py",
-        ];
-    }
-    return [
-        "-u",
-        "agent/main.py",
-    ];
-}
+const RELEASE_AGENT_CHILD_ARGS = [
+    "-u",
+    "agent/main.py",
+];
 
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -716,4 +686,4 @@ if (isMainModule()) {
     main();
 }
 
-export {releaseAgentChildArgs, releaseAgentChildExec};
+export {releaseAgentChildExec, releaseGuiInterface};
